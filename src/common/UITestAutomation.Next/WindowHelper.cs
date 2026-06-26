@@ -54,6 +54,7 @@ public static class WindowHelper
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
     private const int SW_MAXIMIZE = 3;
+    private const int SW_MINIMIZE = 6;
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -121,6 +122,9 @@ public static class WindowHelper
     /// can't hide controls such as the Settings NavigationView pane.
     /// </summary>
     public static void MaximizeWindow(IntPtr hWnd) => ShowWindow(hWnd, SW_MAXIMIZE);
+
+    /// <summary>Minimize a window — e.g. to clear a covering window off a module's capture surface.</summary>
+    public static void MinimizeWindow(IntPtr hWnd) => ShowWindow(hWnd, SW_MINIMIZE);
 
     /// <summary>(Left, Top, Right, Bottom) of the window in screen pixels.</summary>
     public static (int Left, int Top, int Right, int Bottom) GetWindowBounds(IntPtr hWnd)

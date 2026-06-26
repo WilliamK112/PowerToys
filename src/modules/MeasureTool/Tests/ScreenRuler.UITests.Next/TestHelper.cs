@@ -416,6 +416,11 @@ public static class TestHelper
 
         SelectToolAndVerify(ruler, BoundsButtonId, Key.Num1, "Bounds");
 
+        // Bounds-only diagnostic: minimize the Settings window so the 100x100 drag lands on a clear
+        // desktop. Tests the theory that the BoundsToolOverlayWindow isn't on top of Settings on Win10
+        // (the drag would hit Settings and capture nothing), and gives a clean picture in the recording.
+        MinimizeSettingsWindow();
+
         // Drag a 100x100 box centred on the primary monitor. Move to the start first so the Measure
         // Tool overlay is tracking the cursor before the drag. The 99px delta measures 100x100
         // inclusive once the host is per-monitor DPI aware (app.manifest).
@@ -559,6 +564,25 @@ public static class TestHelper
         Log("PerformMeasurementAction: right-click to dismiss the selection");
         MouseHelper.RightClick();
         Thread.Sleep(400);
+    }
+
+    /// <summary>
+    /// Minimize the Settings window so a measurement gesture lands on a clear desktop instead of on top
+    /// of the (possibly covering) Settings window. Bounds-only diagnostic for the Win10 case where the
+    /// BoundsToolOverlayWindow appears not to be on top, so the drag hits Settings and captures nothing.
+    /// </summary>
+    private static void MinimizeSettingsWindow()
+    {
+        var settings = WindowsFinder.ListByApp("PowerToys.Settings").FirstOrDefault();
+        if (settings is null)
+        {
+            Log("MinimizeSettingsWindow: PowerToys.Settings window not found");
+            return;
+        }
+
+        WindowHelper.MinimizeWindow(new IntPtr(settings.Hwnd));
+        Log($"MinimizeSettingsWindow: minimized PowerToys.Settings (hwnd {settings.Hwnd}, '{settings.Title}')");
+        Thread.Sleep(500);
     }
 
     /// <summary>
