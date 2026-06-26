@@ -269,21 +269,46 @@ public static class TestHelper
     /// </summary>
     public static void CloseScreenRulerUI(UITestBase testBase)
     {
-        if (activeRuler is null)
+        if (!IsScreenRulerUIOpen(testBase))
         {
-            Log("CloseScreenRulerUI: no active toolbar session — nothing to close");
+            Log("CloseScreenRulerUI: ruler is not open — nothing to close");
             return;
+        }
+
+        // Prefer the cached toolbar session from ActivateScreenRuler (a targeted search, no full
+        // enumeration). Tests that activate via the raw shortcut (TestShortcutActivation) never set it,
+        // so build one on demand — there's no measurement there, so the overlay is live and fast.
+        var ruler = activeRuler;
+        if (ruler is null)
+        {
+            try
+            {
+                Log("CloseScreenRulerUI: no cached session; building one to reach the Close button");
+                ruler = Session.FromProcess(ScreenRulerProcess, PowerToysModule.ScreenRuler, timeoutMS: 3000);
+            }
+            catch (Exception ex)
+            {
+                Log($"CloseScreenRulerUI: couldn't build a session: {ex.GetType().Name}: {ex.Message}");
+                return;
+            }
         }
 
         try
         {
             Log("CloseScreenRulerUI: clicking the toolbar Close button");
-            activeRuler.Find<Element>(By.AccessibilityId(CloseButtonId), 3000).Click(msPostAction: 300);
+            ruler.Find<Element>(By.AccessibilityId(CloseButtonId), 3000).Click(msPostAction: 300);
             Log("CloseScreenRulerUI: Close button clicked");
         }
         catch (Exception ex)
         {
-            Log($"CloseScreenRulerUI: clicking the Close button failed: {ex.GetType().Name}: {ex.Message}");
+            // The test body closes + asserts disappearance; the CleanupTest safety-net close then races
+            // the process exit and lands here once the app is already gone — benign. winappcli's
+            // "No running app" is the reliable already-gone signal (the Win32 process check briefly
+            // still reports the terminating process, so it isn't trustworthy here).
+            var alreadyGone = (ex.Message ?? string.Empty).Contains("No running app", StringComparison.OrdinalIgnoreCase);
+            Log(alreadyGone
+                ? "CloseScreenRulerUI: ruler already closed by the test body (redundant cleanup close)"
+                : $"CloseScreenRulerUI: Close button click failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
