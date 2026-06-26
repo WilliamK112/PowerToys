@@ -2,6 +2,7 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.PowerToys.UITest.Next;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -201,9 +202,15 @@ public static class TestHelper
     private static bool HasMainKey(Key[] keys) =>
         keys.Any(k => k is not (Key.LWin or Key.Ctrl or Key.Shift or Key.Alt));
 
-    /// <summary>True when at least one Measure Tool window is open.</summary>
+    /// <summary>
+    /// True when the Measure Tool UI is up. Uses a Win32 PROCESS check, NOT winappcli's
+    /// <c>list-windows</c>: once a measuring click FREEZES the overlay, enumerating its UIA tree hangs
+    /// the CLI for its full 60s budget (the cleanup timeout we hit). MeasureToolUI exists only while
+    /// the ruler is open, so process-presence is an accurate, hang-free proxy for open/close. (The
+    /// overlay-appearance check during tool selection still uses winappcli, where the overlay is live.)
+    /// </summary>
     public static bool IsScreenRulerUIOpen(UITestBase testBase) =>
-        WindowsFinder.ListByApp(ScreenRulerProcess).Count > 0;
+        Process.GetProcessesByName(ScreenRulerProcess).Length > 0;
 
     /// <summary>Poll until the Measure Tool UI reaches the requested presence.</summary>
     public static bool WaitForScreenRulerUIState(UITestBase testBase, bool shouldBeOpen, int timeoutMs = 5000, int pollingIntervalMs = 100)
@@ -228,29 +235,34 @@ public static class TestHelper
     public static bool WaitForScreenRulerUIToDisappear(UITestBase testBase, int timeoutMs = 5000) =>
         WaitForScreenRulerUIState(testBase, shouldBeOpen: false, timeoutMs);
 
-    /// <summary>Close the Measure Tool UI if it's open (best-effort, tolerant).</summary>
-    public static void CloseScreenRulerUI(UITestBase testBase)
-    {
-        if (!IsScreenRulerUIOpen(testBase))
-        {
-            return;
-        }
+    /// <summary>
+    /// Close the Measure Tool UI by force-stopping its transient overlay process(es). Deliberately
+    /// avoids winappcli: a process-scoped <see cref="Session.FromProcess"/> and
+    /// <see cref="WindowControl.TryCloseByApp"/> both run <c>list-windows</c> over the now-FROZEN
+    /// post-measurement overlay, which hangs the CLI for 60s (the cleanup timeout). Killing the process
+    /// never hangs and the runner re-creates it on the next activation.
+    /// </summary>
+    public static void CloseScreenRulerUI(UITestBase testBase) => KillScreenRulerProcesses();
 
-        // Prefer the toolbar's Close button; fall back to WM_CLOSE on every Measure Tool window.
-        try
+    /// <summary>Force-stop every transient MeasureToolUI overlay process (to close, or to clear a stale one before activating).</summary>
+    private static void KillScreenRulerProcesses()
+    {
+        foreach (var p in Process.GetProcessesByName(ScreenRulerProcess))
         {
-            var ruler = Session.FromProcess(ScreenRulerProcess, PowerToysModule.ScreenRuler, timeoutMS: 2000);
-            if (ruler.Has(By.AccessibilityId(CloseButtonId), 1000))
+            try
             {
-                ruler.Find<Element>(By.AccessibilityId(CloseButtonId), 2000).Click();
+                p.Kill();
+                p.WaitForExit(2000);
+            }
+            catch
+            {
+                // Tolerant — a cleanup failure must never mask the real test result.
+            }
+            finally
+            {
+                p.Dispose();
             }
         }
-        catch
-        {
-            // Ignore — fall through to the tolerant WM_CLOSE.
-        }
-
-        WindowControl.TryCloseByApp(ScreenRulerProcess);
     }
 
     /// <summary>Clear the clipboard (STA handled inside the helper).</summary>
@@ -302,6 +314,10 @@ public static class TestHelper
     public static Session ActivateScreenRuler(UITestBase testBase, Key[] activationKeys, string testName)
     {
         ClearClipboard();
+
+        // Clear any stale overlay from a prior test before activating, so the process-based open check
+        // (and the activation chord) see a clean slate rather than a leftover MeasureToolUI.
+        KillScreenRulerProcesses();
 
         // Park the cursor on the primary-monitor centre so the Measure Tool initialises tracking at a
         // predictable on-screen spot before activation (the cursor can otherwise be anywhere).
