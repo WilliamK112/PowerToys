@@ -30,8 +30,9 @@ public partial class ExtensionHostInstance
                 {
                     await Host.LogMessage(message);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    CoreLogger.LogError("Failed to forward log message to host process.", ex);
                 }
             });
         }
@@ -53,8 +54,9 @@ public partial class ExtensionHostInstance
                 {
                     await Host.ShowStatus(message, context);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    CoreLogger.LogError("Failed to forward status message to host process.", ex);
                 }
             });
         }
@@ -70,8 +72,9 @@ public partial class ExtensionHostInstance
                 {
                     await Host.HideStatus(message);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    CoreLogger.LogError("Failed to forward hide-status request to host process.", ex);
                 }
             });
         }
