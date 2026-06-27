@@ -68,8 +68,9 @@ namespace KeyboardManagerEditorUI.Settings
                 string json = File.ReadAllText(_settingsFilePath);
                 return JsonSerializer.Deserialize<EditorSettings>(json, _jsonOptions) ?? new EditorSettings();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                ManagedCommon.Logger.LogError($"Failed to load keyboard manager editor settings from {_settingsFilePath}: {ex}");
                 return new EditorSettings();
             }
         }
@@ -83,8 +84,9 @@ namespace KeyboardManagerEditorUI.Settings
                 File.WriteAllText(_settingsFilePath, json);
                 return true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                ManagedCommon.Logger.LogError($"Failed to write keyboard manager editor settings to {_settingsFilePath}: {ex}");
                 return false;
             }
         }
