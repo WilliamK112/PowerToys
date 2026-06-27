@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using ManagedCommon;
 using KeyboardManagerEditorUI.Interop;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -108,8 +109,9 @@ namespace KeyboardManagerEditorUI.Controls
                         cached = list.Where(e => e.KeyCode != 0).ToList();
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Logger.LogError($"Failed to load keyboard key list (IsShortcut={isShortcut}): {ex.Message}");
                     cached = new List<KeyNameEntry>();
                 }
             }
