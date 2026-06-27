@@ -16,17 +16,36 @@ namespace EnvironmentVariablesUILib.Helpers
     {
         internal static string GetBackupVariableName(Variable variable, string profileName)
         {
-            return variable.Name + "_PowerToys_" + profileName;
+            return (variable?.Name ?? string.Empty) + "_PowerToys_" + (profileName ?? string.Empty);
+        }
+
+        internal static bool IsEquivalentVariableValue(string candidateValue, string compareValue)
+        {
+            var candidate = candidateValue ?? string.Empty;
+            var compare = compareValue ?? string.Empty;
+            var expandedCandidate = Environment.ExpandEnvironmentVariables(candidate);
+            var expandedCompare = Environment.ExpandEnvironmentVariables(compare);
+
+            return string.Equals(candidate, compare, StringComparison.Ordinal) ||
+                string.Equals(expandedCandidate, compare, StringComparison.Ordinal) ||
+                string.Equals(candidate, expandedCompare, StringComparison.Ordinal) ||
+                string.Equals(expandedCandidate, expandedCompare, StringComparison.Ordinal);
         }
 
         internal static Variable GetExisting(string variableName)
         {
+            if (string.IsNullOrWhiteSpace(variableName))
+            {
+                return null;
+            }
+
             DefaultVariablesSet userSet = new DefaultVariablesSet(Guid.NewGuid(), "tmpUser", VariablesSetType.User);
             GetVariables(EnvironmentVariableTarget.User, userSet);
+            var normalizedName = variableName?.Trim();
 
             foreach (var variable in userSet.Variables)
             {
-                if (variable.Name.Equals(variableName, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals((variable?.Name ?? string.Empty).Trim(), normalizedName, StringComparison.OrdinalIgnoreCase))
                 {
                     return new Variable(variable.Name, variable.Values, VariablesSetType.User);
                 }
@@ -37,7 +56,7 @@ namespace EnvironmentVariablesUILib.Helpers
 
             foreach (var variable in systemSet.Variables)
             {
-                if (variable.Name.Equals(variableName, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals((variable?.Name ?? string.Empty).Trim(), normalizedName, StringComparison.OrdinalIgnoreCase))
                 {
                     return new Variable(variable.Name, variable.Values, VariablesSetType.System);
                 }
@@ -70,6 +89,18 @@ namespace EnvironmentVariablesUILib.Helpers
         // When applying profile, this would take num_of_variables * 1s to propagate the changes. We do manually SendNotifyMessage with no timeout where needed.
         private static void SetEnvironmentVariableFromRegistryWithoutNotify(string variable, string value, bool fromMachine)
         {
+            if (string.IsNullOrWhiteSpace(variable))
+            {
+                LoggerInstance.Logger.LogError("Can't apply variable - invalid name.");
+                return;
+            }
+
+            if (variable.Contains('='))
+            {
+                LoggerInstance.Logger.LogError("Can't apply variable - invalid name.");
+                return;
+            }
+
             const int MaxUserEnvVariableLength = 255; // User-wide env vars stored in the registry have names limited to 255 chars
             if (!fromMachine && variable.Length >= MaxUserEnvVariableLength)
             {
@@ -81,6 +112,7 @@ namespace EnvironmentVariablesUILib.Helpers
             {
                 if (environmentKey != null)
                 {
+                    var environmentValue = value ?? string.Empty;
                     if (value == null)
                     {
                         environmentKey.DeleteValue(variable, throwOnMissingValue: false);
@@ -88,13 +120,13 @@ namespace EnvironmentVariablesUILib.Helpers
                     else
                     {
                         // If a variable contains %, we save it as a REG_EXPAND_SZ, which is the same behavior as the Windows default environment variables editor.
-                        if (value.Contains('%'))
+                        if (environmentValue.Contains('%'))
                         {
-                            environmentKey.SetValue(variable, value, RegistryValueKind.ExpandString);
+                            environmentKey.SetValue(variable, environmentValue, RegistryValueKind.ExpandString);
                         }
                         else
                         {
-                            environmentKey.SetValue(variable, value, RegistryValueKind.String);
+                            environmentKey.SetValue(variable, environmentValue, RegistryValueKind.String);
                         }
                     }
                 }
@@ -149,6 +181,11 @@ namespace EnvironmentVariablesUILib.Helpers
         // variable's ParentType. These helpers centralize that behavior for the apply/unapply/edit paths.
         internal static bool SetProfileVariableWithoutNotify(Variable variable)
         {
+            if (variable == null || string.IsNullOrWhiteSpace(variable.Name))
+            {
+                return false;
+            }
+
             SetEnvironmentVariableFromRegistryWithoutNotify(variable.Name, variable.Values, fromMachine: false);
 
             return true;
@@ -156,6 +193,11 @@ namespace EnvironmentVariablesUILib.Helpers
 
         internal static bool UnsetProfileVariableWithoutNotify(Variable variable)
         {
+            if (variable == null || string.IsNullOrWhiteSpace(variable.Name))
+            {
+                return false;
+            }
+
             SetEnvironmentVariableFromRegistryWithoutNotify(variable.Name, null, fromMachine: false);
 
             return true;
@@ -163,13 +205,30 @@ namespace EnvironmentVariablesUILib.Helpers
 
         internal static bool SetVariable(Variable variable)
         {
+            if (variable == null || string.IsNullOrWhiteSpace(variable.Name))
+            {
+                return false;
+            }
+
+            if (variable.ParentType != VariablesSetType.Profile && variable.ParentType != VariablesSetType.User && variable.ParentType != VariablesSetType.System)
+            {
+                return false;
+            }
+
             bool fromMachine = variable.ParentType switch
             {
                 VariablesSetType.Profile => false,
                 VariablesSetType.User => false,
                 VariablesSetType.System => true,
-                _ => throw new NotImplementedException(),
+                _ => false,
             };
+
+            const int MaxUserEnvVariableLength = 255; // User-wide env vars stored in the registry have names limited to 255 chars
+            if (!fromMachine && variable.Name.Length >= MaxUserEnvVariableLength)
+            {
+                LoggerInstance.Logger.LogError("Can't apply variable - name too long.");
+                return false;
+            }
 
             SetEnvironmentVariableFromRegistryWithoutNotify(variable.Name, variable.Values, fromMachine);
             NotifyEnvironmentChange();
@@ -179,12 +238,22 @@ namespace EnvironmentVariablesUILib.Helpers
 
         internal static bool UnsetVariable(Variable variable)
         {
+            if (variable == null || string.IsNullOrWhiteSpace(variable.Name))
+            {
+                return false;
+            }
+
+            if (variable.ParentType != VariablesSetType.Profile && variable.ParentType != VariablesSetType.User && variable.ParentType != VariablesSetType.System)
+            {
+                return false;
+            }
+
             bool fromMachine = variable.ParentType switch
             {
                 VariablesSetType.Profile => false,
                 VariablesSetType.User => false,
                 VariablesSetType.System => true,
-                _ => throw new NotImplementedException(),
+                _ => false,
             };
 
             SetEnvironmentVariableFromRegistryWithoutNotify(variable.Name, null, fromMachine);

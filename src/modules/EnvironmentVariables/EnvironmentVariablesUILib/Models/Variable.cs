@@ -64,6 +64,12 @@ namespace EnvironmentVariablesUILib.Models
 
         private bool IsList()
         {
+            if (string.IsNullOrWhiteSpace(Name))
+            {
+                return false;
+            }
+
+            var normalizedName = (Name ?? string.Empty).Trim();
             List<string> listVariables = new()
             {
                 "_NT_ALT_SYMBOL_PATH",
@@ -76,7 +82,7 @@ namespace EnvironmentVariablesUILib.Models
 
             foreach (var name in listVariables)
             {
-                if (Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(normalizedName, name, StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
@@ -97,7 +103,7 @@ namespace EnvironmentVariablesUILib.Models
 
         public Variable(string name, string values, VariablesSetType parentType)
         {
-            Name = name;
+            Name = name?.Trim();
             Values = values;
             ParentType = parentType;
 
@@ -106,17 +112,25 @@ namespace EnvironmentVariablesUILib.Models
 
         internal static ObservableCollection<ValuesListItem> ValuesStringToValuesListItemCollection(string values)
         {
-            return new ObservableCollection<ValuesListItem>(values.Split(';').Select(x => new ValuesListItem { Text = x }));
+            var source = string.IsNullOrWhiteSpace(values) ? string.Empty : values;
+            return new ObservableCollection<ValuesListItem>(source.Split(';').Select(x => new ValuesListItem { Text = x }));
         }
 
         internal Task Update(Variable edited, bool propagateChange, ProfileVariablesSet parentProfile)
         {
-            bool nameChanged = Name != edited.Name;
+            var normalizedEditedName = edited?.Name?.Trim();
+            if (edited == null || string.IsNullOrWhiteSpace(normalizedEditedName))
+            {
+                LoggerInstance.Logger.LogError("Invalid edited variable.");
+                return Task.CompletedTask;
+            }
+
+            bool nameChanged = !string.Equals((Name ?? string.Empty).Trim(), normalizedEditedName, StringComparison.OrdinalIgnoreCase);
 
             var clone = this.Clone();
 
             // Update state
-            Name = edited.Name;
+            Name = normalizedEditedName;
             Values = edited.Values;
 
             ValuesList = ValuesStringToValuesListItemCollection(Values);
@@ -162,16 +176,26 @@ namespace EnvironmentVariablesUILib.Models
                     // It exists. Rename it to preserve it.
                     if (variableToOverride != null && variableToOverride.ParentType == VariablesSetType.User && parentProfile != null)
                     {
-                        // Gets which name the backup variable should have.
-                        variableToOverride.Name = EnvironmentVariablesHelper.GetBackupVariableName(variableToOverride, parentProfile.Name);
-
-                        // Only create a backup variable if there's not one already, to avoid overriding. (solves Path nuking errors, for example, after editing path on an enabled profile)
-                        if (EnvironmentVariablesHelper.GetExisting(variableToOverride.Name) == null)
+                        var backupName = EnvironmentVariablesHelper.GetBackupVariableName(variableToOverride, parentProfile.Name);
+                        var backupVariable = new Variable(variableToOverride.Name, variableToOverride.Values, variableToOverride.ParentType)
                         {
-                            // Backup the variable
-                            if (!EnvironmentVariablesHelper.SetProfileVariableWithoutNotify(variableToOverride))
+                            Name = backupName,
+                        };
+
+                        if (!backupVariable.Validate())
+                        {
+                            LoggerInstance.Logger.LogError("Cannot create backup variable due to invalid backup name.");
+                        }
+                        else
+                        {
+                            // Only create a backup variable if there's not one already, to avoid overriding. (solves Path nuking errors, for example, after editing path on an enabled profile)
+                            if (EnvironmentVariablesHelper.GetExisting(backupVariable.Name) == null)
                             {
-                                LoggerInstance.Logger.LogError("Failed to set backup variable.");
+                                // Backup the variable
+                                if (!EnvironmentVariablesHelper.SetProfileVariableWithoutNotify(backupVariable))
+                                {
+                                    LoggerInstance.Logger.LogError("Failed to set backup variable.");
+                                }
                             }
                         }
                     }
@@ -197,13 +221,20 @@ namespace EnvironmentVariablesUILib.Models
 
         public bool Validate()
         {
-            if (string.IsNullOrWhiteSpace(Name))
+            var normalizedName = Name?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedName))
             {
                 return false;
             }
 
+            if (normalizedName.Contains('='))
+            {
+                LoggerInstance.Logger.LogError("Variable name contains invalid '=' character.");
+                return false;
+            }
+
             const int MaxUserEnvVariableLength = 255; // User-wide env vars stored in the registry have names limited to 255 chars
-            if (ParentType != VariablesSetType.System && Name.Length >= MaxUserEnvVariableLength)
+            if (ParentType != VariablesSetType.System && normalizedName.Length >= MaxUserEnvVariableLength)
             {
                 LoggerInstance.Logger.LogError("Variable name too long.");
                 return false;

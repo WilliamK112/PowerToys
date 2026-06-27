@@ -37,6 +37,12 @@ namespace EnvironmentVariablesUILib.ViewModels
         private ObservableCollection<Variable> _appliedVariables = new ObservableCollection<Variable>();
 
         [ObservableProperty]
+        private ObservableCollection<Variable> _filteredDefaultVariables = new ObservableCollection<Variable>();
+
+        [ObservableProperty]
+        private string _defaultVariablesFilterText = string.Empty;
+
+        [ObservableProperty]
         private bool _isElevated;
 
         [ObservableProperty]
@@ -70,12 +76,15 @@ namespace EnvironmentVariablesUILib.ViewModels
 
             foreach (var variable in UserDefaultSet.Variables)
             {
-                DefaultVariables.Variables.Add(variable);
-                if (AppliedProfile != null)
+                if (variable == null)
                 {
-                    if (AppliedProfile.Variables.Where(
-                        x => (x.Name.Equals(variable.Name, StringComparison.OrdinalIgnoreCase) && x.Values.Equals(variable.Values, StringComparison.OrdinalIgnoreCase))
-                            || variable.Name.Equals(EnvironmentVariablesHelper.GetBackupVariableName(x, AppliedProfile.Name), StringComparison.OrdinalIgnoreCase)).Any())
+                    continue;
+                }
+
+                DefaultVariables.Variables.Add(variable);
+                if (AppliedProfile?.Variables != null && AppliedProfile.Variables.Any())
+                {
+                    if (AppliedProfile.Variables.Any(profileVariable => IsVariableAppliedToProfile(variable, profileVariable, AppliedProfile.Name)))
                     {
                         // If it's a user variable that's also in the profile or is a backup variable, mark it as applied from profile.
                         variable.IsAppliedFromProfile = true;
@@ -85,8 +94,30 @@ namespace EnvironmentVariablesUILib.ViewModels
 
             foreach (var variable in SystemDefaultSet.Variables)
             {
+                if (variable == null)
+                {
+                    continue;
+                }
+
                 DefaultVariables.Variables.Add(variable);
             }
+
+            ApplyDefaultVariablesFilter();
+        }
+
+        private static bool IsVariableAppliedToProfile(Variable defaultVariable, Variable profileVariable, string profileName)
+        {
+            if (defaultVariable == null || profileVariable == null || string.IsNullOrWhiteSpace(defaultVariable.Name))
+            {
+                return false;
+            }
+
+            if (string.Equals((defaultVariable.Name ?? string.Empty).Trim(), (profileVariable.Name ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals((defaultVariable.Name ?? string.Empty).Trim(), EnvironmentVariablesHelper.GetBackupVariableName(profileVariable, profileName).Trim(), StringComparison.OrdinalIgnoreCase);
         }
 
         public void LoadEnvironmentVariables()
@@ -100,18 +131,59 @@ namespace EnvironmentVariablesUILib.ViewModels
         {
             try
             {
-                var profiles = _environmentVariablesService.ReadProfiles();
+                var profiles = _environmentVariablesService?.ReadProfiles() ?? new List<ProfileVariablesSet>();
+                if (profiles == null)
+                {
+                    profiles = new List<ProfileVariablesSet>();
+                }
+
+                var validProfiles = new List<ProfileVariablesSet>();
+                var loadedProfileIds = new HashSet<Guid>();
+                var loadedProfileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                 foreach (var profile in profiles)
                 {
+                    if (profile == null || profile.Id == Guid.Empty)
+                    {
+                        continue;
+                    }
+
+                    profile.Name = (profile.Name ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(profile.Name))
+                    {
+                        continue;
+                    }
+
+                    if (profile.Variables == null)
+                    {
+                        profile.Variables = new ObservableCollection<Variable>();
+                    }
+
+                    if (!loadedProfileIds.Add(profile.Id))
+                    {
+                        continue;
+                    }
+
+                    if (!loadedProfileNames.Add(profile.Name))
+                    {
+                        continue;
+                    }
+
+                    DeduplicateProfileVariables(profile);
                     profile.PropertyChanged += Profile_PropertyChanged;
 
                     foreach (var variable in profile.Variables)
                     {
-                        variable.ParentType = VariablesSetType.Profile;
+                        if (variable != null)
+                        {
+                            variable.ParentType = VariablesSetType.Profile;
+                        }
                     }
+
+                    validProfiles.Add(profile);
                 }
 
-                var appliedProfiles = profiles.Where(x => x.IsEnabled).ToList();
+                var appliedProfiles = validProfiles.Where(x => x != null && x.IsEnabled).ToList();
                 if (appliedProfiles.Count > 0)
                 {
                     var appliedProfile = appliedProfiles.First();
@@ -127,7 +199,7 @@ namespace EnvironmentVariablesUILib.ViewModels
                     }
                 }
 
-                Profiles = new ObservableCollection<ProfileVariablesSet>(profiles);
+                Profiles = new ObservableCollection<ProfileVariablesSet>(validProfiles);
             }
             catch (Exception ex)
             {
@@ -143,29 +215,40 @@ namespace EnvironmentVariablesUILib.ViewModels
             LoadDefaultVariables();
 
             var variables = new List<Variable>();
-            if (AppliedProfile != null)
+            if (AppliedProfile != null && AppliedProfile.Variables != null)
             {
-                variables = variables.Concat(AppliedProfile.Variables.Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values), VariablesSetType.Profile)).OrderBy(x => x.Name)).ToList();
+                variables = variables.Concat(AppliedProfile.Variables.Where(x => x != null).Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values ?? string.Empty), VariablesSetType.Profile)).OrderBy(x => x.Name)).ToList();
             }
 
             // Variables are expanded to be shown in the applied variables section, so the user sees their actual values.
-            variables = variables.Concat(UserDefaultSet.Variables.Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values), VariablesSetType.User)).OrderBy(x => x.Name))
-                                 .Concat(SystemDefaultSet.Variables.Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values), VariablesSetType.System)).OrderBy(x => x.Name))
+            variables = variables.Concat(UserDefaultSet.Variables.Where(x => x != null).Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values ?? string.Empty), VariablesSetType.User)).OrderBy(x => x.Name))
+                                 .Concat(SystemDefaultSet.Variables.Where(x => x != null).Select(x => new Variable(x.Name, Environment.ExpandEnvironmentVariables(x.Values ?? string.Empty), VariablesSetType.System)).OrderBy(x => x.Name))
                                  .ToList();
 
             // Handle PATH variable - add USER value to the end of the SYSTEM value
-            var profilePath = variables.Where(x => x.Name.Equals("PATH", StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.Profile).FirstOrDefault();
-            var userPath = variables.Where(x => x.Name.Equals("PATH", StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.User).FirstOrDefault();
-            var systemPath = variables.Where(x => x.Name.Equals("PATH", StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.System).FirstOrDefault();
+            var profilePath = variables.Where(x => x != null && "PATH".Equals((x.Name ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.Profile).FirstOrDefault();
+            var userPath = variables.Where(x => x != null && "PATH".Equals((x.Name ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.User).FirstOrDefault();
+            var systemPath = variables.Where(x => x != null && "PATH".Equals((x.Name ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase) && x.ParentType == VariablesSetType.System).FirstOrDefault();
 
             if (systemPath != null)
             {
                 var clone = systemPath.Clone();
                 clone.ParentType = VariablesSetType.Path;
+                clone.Values = systemPath.Values ?? string.Empty;
 
                 if (userPath != null)
                 {
-                    clone.Values += ";" + userPath.Values;
+                    var userPathValue = userPath.Values ?? string.Empty;
+                    if (!string.IsNullOrEmpty(userPathValue))
+                    {
+                        if (!string.IsNullOrEmpty(clone.Values))
+                        {
+                            clone.Values += ";";
+                        }
+
+                        clone.Values += userPathValue;
+                    }
+
                     variables.Remove(userPath);
                 }
 
@@ -178,21 +261,31 @@ namespace EnvironmentVariablesUILib.ViewModels
                 variables.Remove(systemPath);
             }
 
-            variables = variables.GroupBy(x => x.Name).Select(y => y.First()).ToList();
-
             // Find duplicates
-            var duplicates = variables.Where(x => !x.Name.Equals("PATH", StringComparison.OrdinalIgnoreCase)).GroupBy(x => x.Name.ToLower(CultureInfo.InvariantCulture)).Where(g => g.Count() > 1);
+            var duplicates = variables.Where(x => x != null && !string.Equals("PATH", (x.Name ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase))
+                                      .GroupBy(x => (x.Name ?? string.Empty).Trim().ToLowerInvariant())
+                                      .Where(g => g.Count() > 1)
+                                      .ToList();
             foreach (var duplicate in duplicates)
             {
-                var userVar = duplicate.ElementAt(0);
-                var systemVar = duplicate.ElementAt(1);
+                var duplicateItems = duplicate.ToList();
+                var representative = duplicateItems.First();
 
-                var clone = userVar.Clone();
+                var clone = representative.Clone();
                 clone.ParentType = VariablesSetType.Duplicate;
-                clone.Name = systemVar.Name;
-                variables.Insert(variables.IndexOf(userVar), clone);
-                variables.Remove(userVar);
-                variables.Remove(systemVar);
+                clone.Name = representative.Name;
+                var insertionIndex = variables.IndexOf(representative);
+                if (insertionIndex < 0)
+                {
+                    insertionIndex = 0;
+                }
+
+                foreach (var item in duplicateItems)
+                {
+                    variables.Remove(item);
+                }
+
+                variables.Insert(insertionIndex, clone);
             }
 
             variables = variables.OrderBy(x => x.ParentType).ToList();
@@ -201,15 +294,48 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         internal void AddDefaultVariable(Variable variable, VariablesSetType type)
         {
+            if (variable == null)
+            {
+                return;
+            }
+
+            if (type != VariablesSetType.User && type != VariablesSetType.System)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(variable.Name) || !variable.Valid)
+            {
+                return;
+            }
+
+            var normalizedName = (variable.Name ?? string.Empty).Trim();
+            variable.Name = normalizedName;
+            variable.ParentType = type;
+
             if (type == VariablesSetType.User)
             {
+                if (UserDefaultSet.Variables != null && UserDefaultSet.Variables.Any(x =>
+                    x != null &&
+                    string.Equals((x.Name ?? string.Empty).Trim(), normalizedName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
                 UserDefaultSet.Variables.Add(variable);
-                UserDefaultSet.Variables = new ObservableCollection<Variable>(UserDefaultSet.Variables.OrderBy(x => x.Name).ToList());
+                UserDefaultSet.Variables = new ObservableCollection<Variable>(UserDefaultSet.Variables.Where(x => x != null).OrderBy(x => x.Name).ToList());
             }
             else if (type == VariablesSetType.System)
             {
+                if (SystemDefaultSet.Variables != null && SystemDefaultSet.Variables.Any(x =>
+                    x != null &&
+                    string.Equals((x.Name ?? string.Empty).Trim(), normalizedName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
                 SystemDefaultSet.Variables.Add(variable);
-                SystemDefaultSet.Variables = new ObservableCollection<Variable>(SystemDefaultSet.Variables.OrderBy(x => x.Name).ToList());
+                SystemDefaultSet.Variables = new ObservableCollection<Variable>(SystemDefaultSet.Variables.Where(x => x != null).OrderBy(x => x.Name).ToList());
             }
 
             EnvironmentVariablesHelper.SetVariable(variable);
@@ -218,11 +344,43 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         internal void EditVariable(Variable original, Variable edited, ProfileVariablesSet variablesSet)
         {
-            bool propagateChange = variablesSet == null /* not a profile */ || variablesSet.Id.Equals(AppliedProfile?.Id);
-            bool changed = original.Name != edited.Name || original.Values != edited.Values;
+            if (original == null || edited == null)
+            {
+                return;
+            }
+
+            bool isProfileVariable = original.ParentType == VariablesSetType.Profile;
+            if (isProfileVariable && variablesSet == null)
+            {
+                LoggerInstance.Logger.LogError("Invalid edit: cannot edit profile variable without owning profile set.");
+                return;
+            }
+
+            Variable targetVariable = original;
+            if (isProfileVariable)
+            {
+                targetVariable = ResolveProfileVariable(variablesSet?.Variables, original);
+                if (targetVariable == null)
+                {
+                    LoggerInstance.Logger.LogError("Invalid edit: cannot resolve owning profile variable.");
+                    return;
+                }
+            }
+
+            bool propagateChange = !isProfileVariable || variablesSet.Id.Equals(AppliedProfile?.Id);
+            var originalName = (targetVariable.Name ?? string.Empty).Trim();
+            var editedName = (edited.Name ?? string.Empty).Trim();
+            bool changed = !string.Equals(originalName, editedName, StringComparison.OrdinalIgnoreCase) ||
+                !EnvironmentVariablesHelper.IsEquivalentVariableValue(targetVariable.Values, edited.Values);
+            if (changed && string.IsNullOrEmpty(edited.Values))
+            {
+                DeleteVariable(targetVariable, variablesSet);
+                return;
+            }
+
             if (changed)
             {
-                var task = original.Update(edited, propagateChange, variablesSet);
+                var task = targetVariable.Update(edited, propagateChange, variablesSet);
                 task.ContinueWith(x =>
                 {
                     _dispatcherQueue.TryEnqueue(() =>
@@ -238,6 +396,39 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         internal void AddProfile(ProfileVariablesSet profile)
         {
+            if (profile == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(profile.Name))
+            {
+                return;
+            }
+
+            profile.Name = profile.Name.Trim();
+
+            if (profile.Variables == null)
+            {
+                profile.Variables = new ObservableCollection<Variable>();
+            }
+
+            if (Profiles == null)
+            {
+                Profiles = new ObservableCollection<ProfileVariablesSet>();
+            }
+
+            if (Profiles.Any(p => p != null && p.Id == profile.Id))
+            {
+                return;
+            }
+
+            if (Profiles.Any(p => p != null && string.Equals((p.Name ?? string.Empty).Trim(), profile.Name, StringComparison.OrdinalIgnoreCase) && p.Id != profile.Id))
+            {
+                return;
+            }
+
+            DeduplicateProfileVariables(profile);
             profile.PropertyChanged += Profile_PropertyChanged;
             if (profile.IsEnabled)
             {
@@ -252,9 +443,37 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         internal void UpdateProfile(ProfileVariablesSet updatedProfile)
         {
+            if (updatedProfile == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(updatedProfile.Name))
+            {
+                return;
+            }
+
+            updatedProfile.Name = updatedProfile.Name.Trim();
+
+            if (Profiles == null)
+            {
+                return;
+            }
+
             var existingProfile = Profiles.Where(x => x.Id == updatedProfile.Id).FirstOrDefault();
             if (existingProfile != null)
             {
+                if (updatedProfile.Variables == null)
+                {
+                    updatedProfile.Variables = new ObservableCollection<Variable>();
+                }
+
+                if (Profiles.Any(x => x != null && x.Id != updatedProfile.Id && string.Equals((x.Name ?? string.Empty).Trim(), updatedProfile.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
+                DeduplicateProfileVariables(updatedProfile);
                 if (updatedProfile.IsEnabled)
                 {
                     // Let's unset the profile before applying the update. Even if this one is the one that's currently set.
@@ -311,18 +530,20 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         private void SetAppliedProfile(ProfileVariablesSet profile)
         {
-            if (profile != null)
+            if (profile == null)
             {
-                if (!profile.IsApplicable())
-                {
-                    profile.PropertyChanged -= Profile_PropertyChanged;
-                    profile.IsEnabled = false;
-                    profile.PropertyChanged += Profile_PropertyChanged;
+                return;
+            }
 
-                    EnvironmentState = EnvironmentState.ProfileNotApplicable;
+            if (!profile.IsApplicable())
+            {
+                profile.PropertyChanged -= Profile_PropertyChanged;
+                profile.IsEnabled = false;
+                profile.PropertyChanged += Profile_PropertyChanged;
 
-                    return;
-                }
+                EnvironmentState = EnvironmentState.ProfileNotApplicable;
+
+                return;
             }
 
             var task = profile.Apply();
@@ -356,8 +577,97 @@ namespace EnvironmentVariablesUILib.ViewModels
             }
         }
 
+        private static void DeduplicateProfileVariables(ProfileVariablesSet profile)
+        {
+            if (profile?.Variables == null)
+            {
+                return;
+            }
+
+            var cleanedVariables = new List<Variable>();
+            foreach (var variable in profile.Variables)
+            {
+                if (variable == null)
+                {
+                    continue;
+                }
+
+                variable.Name = variable.Name?.Trim();
+                if (string.IsNullOrWhiteSpace(variable.Name))
+                {
+                    continue;
+                }
+
+                cleanedVariables.Add(variable);
+            }
+
+            var deduped = cleanedVariables
+                .GroupBy(variable => $"{variable.Name?.Trim().ToUpperInvariant()}")
+                .Select(group => group.First())
+                .ToList();
+
+            if (deduped.Count != profile.Variables.Count)
+            {
+                profile.Variables = new ObservableCollection<Variable>(deduped);
+
+                foreach (var variable in profile.Variables)
+                {
+                    variable.ParentType = VariablesSetType.Profile;
+                }
+            }
+        }
+
+        partial void OnDefaultVariablesFilterTextChanged(string value)
+        {
+            ApplyDefaultVariablesFilter();
+        }
+
+        internal void SetDefaultVariablesFilter(string filterText)
+        {
+            DefaultVariablesFilterText = filterText;
+        }
+
+        internal void ClearDefaultVariablesFilter()
+        {
+            DefaultVariablesFilterText = string.Empty;
+        }
+
+        private void ApplyDefaultVariablesFilter()
+        {
+            if (DefaultVariables == null || DefaultVariables.Variables == null)
+            {
+                FilteredDefaultVariables = new ObservableCollection<Variable>();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(DefaultVariablesFilterText))
+            {
+                FilteredDefaultVariables = new ObservableCollection<Variable>(DefaultVariables.Variables);
+                return;
+            }
+
+            var query = DefaultVariablesFilterText.Trim();
+            var filtered = DefaultVariables.Variables
+                .Where(variable =>
+                    (!string.IsNullOrWhiteSpace(variable?.Name) && variable.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                    || (!string.IsNullOrWhiteSpace(variable?.Values) && variable.Values.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0))
+                .ToList();
+
+            FilteredDefaultVariables = new ObservableCollection<Variable>(filtered);
+        }
+
         internal void RemoveProfile(ProfileVariablesSet profile)
         {
+            if (profile == null)
+            {
+                return;
+            }
+
+            if (Profiles == null)
+            {
+                return;
+            }
+
             if (profile.IsEnabled)
             {
                 UnsetAppliedProfile();
@@ -370,12 +680,44 @@ namespace EnvironmentVariablesUILib.ViewModels
 
         internal void DeleteVariable(Variable variable, ProfileVariablesSet profile)
         {
+            if (variable == null)
+            {
+                return;
+            }
+
+            if (variable.ParentType == VariablesSetType.Profile && profile == null)
+            {
+                LoggerInstance.Logger.LogError("Invalid delete: cannot delete profile variable without owning profile set.");
+                return;
+            }
+
             bool propagateChange = true;
+
+            var variableToProcess = variable;
 
             if (profile != null)
             {
+                if (profile.Variables == null)
+                {
+                    return;
+                }
+
+                var targetVariable = ResolveProfileVariable(profile.Variables, variable);
+                if (targetVariable == null)
+                {
+                    LoggerInstance.Logger.LogError("Invalid delete: unable to resolve owning profile variable.");
+                    return;
+                }
+
                 // Profile variable
-                profile.Variables.Remove(variable);
+                var removed = profile.Variables.Remove(targetVariable);
+                if (!removed)
+                {
+                    LoggerInstance.Logger.LogError("Failed to remove profile variable from profile list.");
+                    return;
+                }
+
+                variableToProcess = targetVariable;
 
                 if (!profile.IsEnabled)
                 {
@@ -386,11 +728,11 @@ namespace EnvironmentVariablesUILib.ViewModels
             }
             else
             {
-                if (variable.ParentType == VariablesSetType.User)
+                if (variable.ParentType == VariablesSetType.User && UserDefaultSet?.Variables != null)
                 {
                     UserDefaultSet.Variables.Remove(variable);
                 }
-                else if (variable.ParentType == VariablesSetType.System)
+                else if (variable.ParentType == VariablesSetType.System && SystemDefaultSet?.Variables != null)
                 {
                     SystemDefaultSet.Variables.Remove(variable);
                 }
@@ -406,7 +748,7 @@ namespace EnvironmentVariablesUILib.ViewModels
                     }
                     else
                     {
-                        profile.UnapplyVariable(variable);
+                        profile.UnapplyVariable(variableToProcess);
                     }
                 });
                 task.ContinueWith((a) =>
@@ -417,6 +759,41 @@ namespace EnvironmentVariablesUILib.ViewModels
                     });
                 });
             }
+        }
+
+        private static Variable ResolveProfileVariable(ObservableCollection<Variable> variables, Variable target)
+        {
+            if (variables == null || target == null)
+            {
+                return null;
+            }
+
+            var normalizedTargetName = (target.Name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalizedTargetName))
+            {
+                return null;
+            }
+
+            var exactMatch = variables.FirstOrDefault(x => ReferenceEquals(x, target));
+            if (exactMatch != null)
+            {
+                return exactMatch;
+            }
+
+            var normalizedName = normalizedTargetName;
+            var matches = variables
+                .Where(x => x != null && string.Equals((x.Name ?? string.Empty).Trim(), normalizedName, StringComparison.OrdinalIgnoreCase))
+                .Where(x => EnvironmentVariablesHelper.IsEquivalentVariableValue(x?.Values, target.Values))
+                .ToList();
+
+            if (matches.Count != 1)
+            {
+                LoggerInstance.Logger.LogError(
+                    $"Invalid profile variable resolution: expected one match for '{normalizedName}' but found {matches.Count}.");
+                return null;
+            }
+
+            return matches[0];
         }
     }
 }
