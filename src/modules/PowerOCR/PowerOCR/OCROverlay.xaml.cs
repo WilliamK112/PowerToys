@@ -192,9 +192,10 @@ public partial class OCROverlay : Window
         {
             RegionClickCanvas.Children.Remove(selectBorder);
         }
-        catch (Exception)
-        {
-        }
+            catch (Exception ex)
+            {
+                Logger.LogError("Failed to remove previous OCR selection border.", ex);
+            }
 
         selectBorder.BorderThickness = new Thickness(2);
         Color borderColor = Color.FromArgb(255, 40, 118, 126);
