@@ -4,6 +4,7 @@
 
 using System;
 using System.Diagnostics;
+using ManagedCommon;
 
 namespace KeyboardManagerEditorUI.Helpers
 {
@@ -24,8 +25,9 @@ namespace KeyboardManagerEditorUI.Helpers
 
                 return running;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Logger.LogWarning($"Failed to determine whether {KeyboardManagerEngineProcessName} service is running: {ex.Message}");
                 return false;
             }
         }
@@ -43,8 +45,9 @@ namespace KeyboardManagerEditorUI.Helpers
 
                 return running;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Logger.LogWarning($"Failed to determine whether PowerToys is running: {ex.Message}");
                 return false;
             }
         }
